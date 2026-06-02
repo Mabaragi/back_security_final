@@ -34,4 +34,10 @@ build/
 
 application-dev.properties
 
+### Terraform ###
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
 

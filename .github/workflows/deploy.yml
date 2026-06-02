@@ -1,80 +1,243 @@
-name: CI/CD Pipeline  # GitHub Actions 워크플로우의 이름
+name: CI/CD Pipeline
 
 on:
   push:
     branches:
-      - main  # main 브랜치에 push 이벤트가 발생했을 때 워크플로우 실행
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_ACCOUNT_ID: "383941187875"
+  AWS_ROLE_ARN: arn:aws:iam::383941187875:role/cicd03-back-security-github-actions
+  ECR_REPOSITORY: jwt-app
+  APP_CONTAINER_NAME: jwt_app
+  MYSQL_CONTAINER_NAME: mysql
+  DOCKER_NETWORK: app-net
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest  # 최신 Ubuntu 환경에서 작업 실행
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v3  # GitHub 저장소의 소스코드를 가져오는 액션
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v3  # JDK 설정 액션
+        uses: actions/setup-java@v4
         with:
-          java-version: '17'  # Java 17 버전 사용
-          distribution: 'temurin'  # AdoptOpenJDK의 Temurin 배포판 사용
+          java-version: "17"
+          distribution: temurin
+          cache: maven
 
-      - name: mvnw 실행 권한 부여
-        run: chmod +x ./mvnw  # mvnw 파일(Wrapper)에 실행 권한 부여
-
-      - name: Maven 빌드 실행
-        run: ./mvnw clean package -DskipTests  # Maven 빌드 실행 (테스트 생략)
-      # run: ./mvnw clean verify  # 테스트 포함 빌드 시 이 명령어 사용
-
-      - name: Docker Hub 로그인
-        uses: docker/login-action@v3  # Docker Hub에 로그인하는 액션
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}  # GitHub에 저장된 시크릿 값 사용
-          password: ${{ secrets.DOCKER_ACCESS_TOKEN }}
-
-      - name: Docker 이미지 빌드
-        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/jwt-app:latest .  # 애플리케이션을 도커 이미지로 빌드
-
-      - name: Docker 이미지 푸시
-        run: docker push ${{ secrets.DOCKER_USERNAME }}/jwt-app:latest  # 빌드한 이미지를 Docker Hub에 업로드
-
-      # .env 파일을 Actions 내에서 동적으로 생성
-      - name: .env 파일 생성
+      - name: Build application
         run: |
-          echo "SPRING_JWT_SECRET=${{ secrets.SPRING_JWT_SECRET }}" >> .env  # Spring JWT 시크릿 키
-          echo "MYSQL_URL=${{ secrets.MYSQL_URL }}" >> .env  # DB URL
-          echo "MYSQL_USER=${{ secrets.MYSQL_USER }}" >> .env  # DB 사용자명
-          echo "MYSQL_PASSWORD=${{ secrets.MYSQL_PASSWORD }}" >> .env  # DB 비밀번호
-          echo "DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}" >> .env  # 도커 허브 사용자명
+          chmod +x ./mvnw
+          ./mvnw clean package -DskipTests
 
-      - name: EC2에 docker-compose.yml + .env 전송
-        uses: appleboy/scp-action@v0.1.7  # EC2로 파일 전송하는 액션(SCP 방식)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}  # EC2 호스트 주소
-          username: ${{ secrets.EC2_USERNAME }}  # EC2 사용자명 (보통 ubuntu)
-          key: ${{ secrets.EC2_PRIVATE_KEY }}  # EC2 개인 키 (.pem 내용)
-          source: "docker-compose.yml,.env"  # 전송할 파일 목록 (쉼표로 구분)
-          target: "~/cicd-docker"  # EC2 내 대상 경로
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: EC2에서 docker-compose 실행
-        uses: appleboy/ssh-action@v1.0.0  # EC2에 SSH 접속하여 명령 실행
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_PRIVATE_KEY }}
-          script: |
-            cd ~/cicd-docker  # 도커 파일이 위치한 경로로 이동
-            docker pull ${{ secrets.DOCKER_USERNAME }}/jwt-app:latest  # 최신 이미지 가져오기
-            docker compose down  # 기존 컨테이너 종료
-            docker compose up -d  # 백그라운드로 새 컨테이너 실행
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # 7. Slack 알림 전송
-      - name: Notify to Slack
-        uses: rtCamp/action-slack-notify@v2
+      - name: Build and push Docker image
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_USERNAME: GitHub Actions
-          SLACK_ICON_EMOJI: ':rocket:'
-          SLACK_TITLE: '✅ EC2 배포 완료'
-          SLACK_MESSAGE: 'Main 브랜치에 push됨 → EC2에 배포가 성공적으로 완료되었습니다! 🎉'
-          SLACK_COLOR: good
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euxo pipefail
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Find deployment instance
+        id: instance
+        run: |
+          set -euxo pipefail
+          INSTANCE_ID="$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters \
+              "Name=tag:Project,Values=cicd03-back-security" \
+              "Name=tag:Role,Values=app" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId | [0]" \
+            --output text)"
+
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "No running EC2 instance found for Project=cicd03-back-security Role=app" >&2
+            exit 1
+          fi
+
+          PUBLIC_IP="$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)"
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+          echo "Deploy target: $INSTANCE_ID ($PUBLIC_IP)"
+
+      - name: Deploy to EC2 with SSM
+        id: deploy
+        env:
+          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          SPRING_JWT_SECRET: ${{ secrets.SPRING_JWT_SECRET }}
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+          MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
+          MYSQL_USER: ${{ secrets.MYSQL_USER }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          for name in SPRING_JWT_SECRET MYSQL_ROOT_PASSWORD MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required GitHub secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          MYSQL_URL="jdbc:mysql://$MYSQL_CONTAINER_NAME:3306/$MYSQL_DATABASE?serverTimezone=Asia/Seoul&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false"
+
+          quote() {
+            python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$1"
+          }
+
+          {
+            echo "set -euxo pipefail"
+            echo "AWS_REGION=$(quote "$AWS_REGION")"
+            echo "ECR_REGISTRY=$(quote "$ECR_REGISTRY")"
+            echo "IMAGE_URI=$(quote "$IMAGE_URI")"
+            echo "APP_CONTAINER_NAME=$(quote "$APP_CONTAINER_NAME")"
+            echo "MYSQL_CONTAINER_NAME=$(quote "$MYSQL_CONTAINER_NAME")"
+            echo "DOCKER_NETWORK=$(quote "$DOCKER_NETWORK")"
+            echo "SPRING_JWT_SECRET=$(quote "$SPRING_JWT_SECRET")"
+            echo "MYSQL_ROOT_PASSWORD=$(quote "$MYSQL_ROOT_PASSWORD")"
+            echo "MYSQL_DATABASE=$(quote "$MYSQL_DATABASE")"
+            echo "MYSQL_USER=$(quote "$MYSQL_USER")"
+            echo "MYSQL_PASSWORD=$(quote "$MYSQL_PASSWORD")"
+            echo "MYSQL_URL=$(quote "$MYSQL_URL")"
+            cat <<'REMOTE_SCRIPT'
+
+          cloud-init status --wait || true
+
+          if ! command -v aws >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+            rm -rf /tmp/aws
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install --update
+          fi
+
+          if ! command -v docker >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+          fi
+
+          systemctl enable --now docker
+          mkdir -p /home/ubuntu/app/mysql
+          chown -R ubuntu:ubuntu /home/ubuntu/app
+
+          docker network create "$DOCKER_NETWORK" 2>/dev/null || true
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker pull "$IMAGE_URI"
+
+          docker stop "$APP_CONTAINER_NAME" 2>/dev/null || true
+          docker rm "$APP_CONTAINER_NAME" 2>/dev/null || true
+
+          if ! docker ps -a --format '{{.Names}}' | grep -qx "$MYSQL_CONTAINER_NAME"; then
+            docker run -d \
+              --name "$MYSQL_CONTAINER_NAME" \
+              --restart unless-stopped \
+              --network "$DOCKER_NETWORK" \
+              -v /home/ubuntu/app/mysql:/var/lib/mysql \
+              -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
+              -e MYSQL_DATABASE="$MYSQL_DATABASE" \
+              -e MYSQL_USER="$MYSQL_USER" \
+              -e MYSQL_PASSWORD="$MYSQL_PASSWORD" \
+              mysql:8.0
+          else
+            docker start "$MYSQL_CONTAINER_NAME"
+          fi
+
+          for i in $(seq 1 60); do
+            if docker exec "$MYSQL_CONTAINER_NAME" mysqladmin ping -h 127.0.0.1 -u root -p"$MYSQL_ROOT_PASSWORD" --silent; then
+              break
+            fi
+            sleep 2
+          done
+
+          docker run -d \
+            --name "$APP_CONTAINER_NAME" \
+            --restart unless-stopped \
+            --network "$DOCKER_NETWORK" \
+            -p 8080:8080 \
+            -e SPRING_PROFILES_ACTIVE=prod \
+            -e SPRING_JWT_SECRET="$SPRING_JWT_SECRET" \
+            -e MYSQL_URL="$MYSQL_URL" \
+            -e MYSQL_USER="$MYSQL_USER" \
+            -e MYSQL_PASSWORD="$MYSQL_PASSWORD" \
+            -e JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Seoul -Dfile.encoding=UTF-8" \
+            "$IMAGE_URI"
+
+          docker ps --filter name="$MYSQL_CONTAINER_NAME" --filter name="$APP_CONTAINER_NAME"
+          curl -fsS --max-time 20 http://127.0.0.1:8080/test
+          REMOTE_SCRIPT
+          } > remote-deploy.sh
+
+          jq -n \
+            --arg instance "$INSTANCE_ID" \
+            --arg comment "Deploy $GITHUB_SHA to cicd03-back-security" \
+            --rawfile script remote-deploy.sh \
+            '{
+              InstanceIds: [$instance],
+              DocumentName: "AWS-RunShellScript",
+              Comment: $comment,
+              Parameters: {commands: [$script]}
+            }' > ssm-command.json
+
+          COMMAND_ID="$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --cli-input-json file://ssm-command.json \
+            --query "Command.CommandId" \
+            --output text)"
+
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM command id: $COMMAND_ID"
+
+          set +e
+          aws ssm wait command-executed \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+          WAIT_STATUS=$?
+          set -e
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "{Status:Status,ResponseCode:ResponseCode,Stdout:StandardOutputContent,Stderr:StandardErrorContent}" \
+            --output json
+
+          exit "$WAIT_STATUS"
+
+      - name: Verify public endpoint
+        env:
+          PUBLIC_IP: ${{ steps.instance.outputs.public_ip }}
+        run: |
+          set -euxo pipefail
+          curl -fsS --max-time 30 "http://$PUBLIC_IP:8080/test"
