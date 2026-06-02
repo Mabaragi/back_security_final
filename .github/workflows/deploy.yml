@@ -116,7 +116,7 @@ jobs:
           }
 
           {
-            echo "set -euxo pipefail"
+            echo "set -eux"
             echo "AWS_REGION=$(quote "$AWS_REGION")"
             echo "ECR_REGISTRY=$(quote "$ECR_REGISTRY")"
             echo "IMAGE_URI=$(quote "$IMAGE_URI")"
