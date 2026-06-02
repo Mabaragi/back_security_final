@@ -1,11 +1,8 @@
 package web.mvc.config;
+
 import org.springframework.context.annotation.Configuration;
-import 
-org.springframework.web.servlet.config.annotation.CorsRegistry;
-import 
-org.springframework.web.servlet.config.annotation.EnableWebMvc;
-import 
-org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -16,11 +13,16 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebMvcConfig implements WebMvcConfigurer {
   @Override
   public void addCorsMappings(CorsRegistry registry) {
-     registry.addMapping("/**")
-    // .allowedOrigins("http://localhost:5173","http://localhost:4173")
-     //.allowedOrigins("http://43.200.184.113:5173", "http://43.200.184.113:4173")
-      .allowedOrigins("http://43.203.170.229", "http://43.203.170.229:80")
-      .allowedOrigins("http://heejung.n-e.kr", "https://heejung.n-e.kr")
-     .allowedMethods("OPTIONS","GET","POST","PUT","DELETE");
+    registry.addMapping("/**")
+        .allowedOrigins(
+            "http://localhost:5173",
+            "http://localhost:4173",
+            "https://dxydnpaqz4c3k.cloudfront.net",
+            "http://43.203.170.229",
+            "http://43.203.170.229:80",
+            "http://heejung.n-e.kr",
+            "https://heejung.n-e.kr"
+        )
+        .allowedMethods("OPTIONS", "GET", "POST", "PUT", "PATCH", "DELETE");
   }
 }

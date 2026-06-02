@@ -32,3 +32,13 @@ output "test_url" {
   description = "Public endpoint used by the deployment workflow for verification."
   value       = "http://${aws_instance.app.public_ip}:${var.app_port}/test"
 }
+
+output "api_cloudfront_domain_name" {
+  description = "CloudFront domain name for the HTTPS API endpoint."
+  value       = aws_cloudfront_distribution.api.domain_name
+}
+
+output "api_base_url" {
+  description = "HTTPS API base URL for frontend builds."
+  value       = "https://${aws_cloudfront_distribution.api.domain_name}"
+}
