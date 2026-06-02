@@ -46,9 +46,6 @@ public class BoardServiceImpl implements BoardService{
 
 		//Lis<Board>
 		System.out.println("--------------------------------------------");
-		if(list ==null || list.isEmpty())
-			throw new BoardSearchNotException("전체게시물이 없습니다.", "Not Found Board All");
-
 		return list.stream().map(BoardRes::new).collect(Collectors.toList());
 	}
 	
