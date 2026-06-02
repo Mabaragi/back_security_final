@@ -116,7 +116,7 @@ jobs:
           }
 
           {
-            echo "set -eux"
+            echo "set -eu"
             echo "AWS_REGION=$(quote "$AWS_REGION")"
             echo "ECR_REGISTRY=$(quote "$ECR_REGISTRY")"
             echo "IMAGE_URI=$(quote "$IMAGE_URI")"
@@ -150,6 +150,16 @@ jobs:
           systemctl enable --now docker
           mkdir -p /home/ubuntu/app/mysql
           chown -R ubuntu:ubuntu /home/ubuntu/app
+
+          if [ ! -f /swapfile ]; then
+            fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          elif ! swapon --show | grep -q /swapfile; then
+            swapon /swapfile
+          fi
 
           docker network create "$DOCKER_NETWORK" 2>/dev/null || true
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
@@ -190,11 +200,21 @@ jobs:
             -e MYSQL_URL="$MYSQL_URL" \
             -e MYSQL_USER="$MYSQL_USER" \
             -e MYSQL_PASSWORD="$MYSQL_PASSWORD" \
-            -e JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Seoul -Dfile.encoding=UTF-8" \
+            -e JAVA_TOOL_OPTIONS="-Xms128m -Xmx512m -Duser.timezone=Asia/Seoul -Dfile.encoding=UTF-8" \
             "$IMAGE_URI"
 
           docker ps --filter name="$MYSQL_CONTAINER_NAME" --filter name="$APP_CONTAINER_NAME"
-          curl -fsS --max-time 20 http://127.0.0.1:8080/test
+
+          for i in $(seq 1 90); do
+            if curl -fsS --max-time 5 http://127.0.0.1:8080/test; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs --tail 200 "$APP_CONTAINER_NAME" 2>&1 || true
+          docker logs --tail 100 "$MYSQL_CONTAINER_NAME" 2>&1 || true
+          exit 1
           REMOTE_SCRIPT
           } > remote-deploy.sh
 

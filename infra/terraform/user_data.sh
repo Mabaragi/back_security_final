@@ -16,6 +16,14 @@ fi
 systemctl enable --now docker
 systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || systemctl enable --now amazon-ssm-agent || true
 
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 usermod -aG docker ubuntu || true
 mkdir -p /home/ubuntu/app/mysql
 chown -R ubuntu:ubuntu /home/ubuntu/app
